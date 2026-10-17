@@ -167,13 +167,18 @@
     load(nn).then(function (data) {
       if (my !== token) return;
       var v = build(data);
-      return Promise.all(v.imgs.map(function (im) { return im.decode ? im.decode().catch(function () {}) : null; })).then(function () {
+      // decode() бывает не завершается (страница без отрисовки, причуды WebKit на больших картинках): кадр ждёт не дольше 2,5 с;
+      // запуск — по кадру отрисовки, а если его нет (фоновая вкладка) — по таймеру
+      var dec = Promise.all(v.imgs.map(function (im) { return im.decode ? im.decode().catch(function () {}) : null; }));
+      return Promise.race([dec, new Promise(function (r) { setTimeout(r, 2500); })]).then(function () {
         if (my !== token) return;
         finish();
         frame.replaceChildren(v.el);
         msg.textContent = "";
         cur = v; shown = i; arm(v);
-        requestAnimationFrame(function () { if (my === token) play(); });
+        var started = false;
+        var go = function () { if (!started && my === token) { started = true; play(); } };
+        requestAnimationFrame(go); setTimeout(go, 120);
         try { history.replaceState(null, "", "#" + (i + 1)); } catch (e) {}
         if (i + 1 < SLIDES.length) load(SLIDES[i + 1][0]).catch(function () {});
       });
