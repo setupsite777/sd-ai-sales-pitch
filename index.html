@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Платформа поддержки продаж рекламы</title>
+<style>:root{ box-sizing:border-box; padding-top:env(safe-area-inset-top, 0px); padding-bottom:env(safe-area-inset-bottom, 0px); }
+  [hidden]{ display:none !important; }</style>
+</head>
+<body>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Плеер питч-колоды: кадр 1920 × 1080 вписан в экран, полоса управления снизу. Тёмная рамка вокруг кадра —
+     одна во всех темах: кадр светлый, рамка его не спорит с ним. */
+  :root{ --bg:#14181D; --ink:#E6EAF0; --mute:#8A94A3; --line:#39424E; --paper:#F1E9DC; --focus:#9DB4FF; color-scheme:dark; }
+  html,body{ height:100%; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font:500 14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+        overflow:hidden; display:flex; flex-direction:column; box-sizing:border-box;
+        padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)); }
+  #stage{ flex:1; min-height:0; position:relative; overflow:hidden; touch-action:manipulation; cursor:pointer;
+          -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none; }
+  #frame{ position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; background:var(--paper); overflow:hidden; }
+  #frame img{ max-width:none; position:absolute; display:block; pointer-events:none; }
+  #frame .ly{ position:absolute; }
+  #frame .off{ visibility:hidden; }
+  #msg{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--mute); pointer-events:none; }
+  #bar{ flex:none; display:flex; align-items:center; gap:8px 12px; flex-wrap:wrap; padding-block:10px; color:var(--mute); }
+  #bar b{ color:var(--ink); font-variant-numeric:tabular-nums; }
+  button{ background:none; border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; min-height:36px; }
+  button:focus-visible{ outline:2px solid var(--focus); outline-offset:2px; }
+  #where{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 12em; }
+  #hint{ margin-left:auto; }
+  #fs[hidden]{ display:none; }
+  :fullscreen #bar{ display:none; }
+  @media (max-width:720px){ #hint{ display:none; } #where{ flex-basis:100%; order:-1; } }
+</style>
+<div id="stage" aria-label="Кадр презентации: касание справа — дальше, слева — назад"><div id="frame"></div><div id="msg">Загрузка кадра…</div></div>
+<div id="bar">
+  <button id="prev" type="button" aria-label="Предыдущий кадр">←</button>
+  <button id="next" type="button" aria-label="Дальше">→</button>
+  <button id="again" type="button">Повторить</button>
+  <span id="where"><b id="no">01</b> / <span id="cnt"></span> · <span id="nm"></span> <span id="st"></span></span>
+  <span id="hint">→ или пробел — дальше · ← — назад · R — повторить · F — во весь экран</span>
+  <button id="fs" type="button" hidden>Во весь экран</button>
+</div>
+<script>
+(function () {
+  "use strict";
+  var SLIDES = [["01", "Обложка"], ["02", "Проблема"], ["03", "Решение"], ["04", "Почему сейчас"], ["05", "Рынок"], ["06", "Проверка"], ["07", "Бизнес-модель"], ["08", "Альтернативы"], ["09", "Команда"], ["10", "Запрос и вехи"], ["11", "Финал"], ["12", "Приложение. Расчёт ценности"], ["13", "Приложение. Сроки по путям"], ["14", "Приложение. Риски и меры"]];
+  var TOK = { enter: 300, scale: 0.95, shift: 28 };
+  var EASE = { enter: "cubic-bezier(.05,.7,.1,1)", move: "cubic-bezier(.2,0,0,1)", fade: "linear" };
+  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var stage = document.getElementById("stage"), frame = document.getElementById("frame"), msg = document.getElementById("msg");
+  var st = document.getElementById("st");
+  var i = 0, cur = null, running = false, token = 0, timer = 0, cache = {}, shown = -1;
+  document.getElementById("cnt").textContent = SLIDES.length;
+  var h = parseInt(String(location.hash).slice(1), 10);
+  if (h >= 1 && h <= SLIDES.length) i = h - 1;
+
+  function fit() {
+    var w = stage.clientWidth, hh = stage.clientHeight, k = Math.min(w / 1920, hh / 1080);
+    frame.style.transform = "translate(" + (w - 1920 * k) / 2 + "px," + (hh - 1080 * k) / 2 + "px) scale(" + k + ")";
+  }
+  function load(nn) {
+    if (!cache[nn]) cache[nn] = fetch("s/" + nn + ".json").then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+    return cache[nn];
+  }
+
+  // Эффекты такта — как в motion.js кадра: задано только начальное состояние, конец — сам кадр.
+  function frames(fx, o, d) {
+    var shift = o.shift || TOK.shift;
+    if (reduce && fx !== "count") return { k: [{ opacity: 0 }, {}], d: 180, e: EASE.fade };
+    switch (fx) {
+      case "fade":  return { k: [{ opacity: 0 }, {}], d: d, e: EASE.enter };
+      case "up":    return { k: [{ opacity: 0, transform: "translateY(" + shift + "px)" }, {}], d: d, e: EASE.enter };
+      case "down":  return { k: [{ opacity: 0, transform: "translateY(" + (-shift) + "px)" }, {}], d: d, e: EASE.enter };
+      case "left":  return { k: [{ opacity: 0, transform: "translateX(" + (-shift) + "px)" }, {}], d: d, e: EASE.enter };
+      case "right": return { k: [{ opacity: 0, transform: "translateX(" + shift + "px)" }, {}], d: d, e: EASE.enter };
+      case "pop":   return { k: [{ opacity: 0, transform: "scale(" + (o.scale || TOK.scale) + ")" }, {}], d: d, e: EASE.enter, o: o.origin || "50% 50%" };
+      case "hero":  return { k: [{ opacity: 0, transform: "scale(" + (o.scale || 0.9) + ")" }, {}], d: d, e: EASE.enter, o: o.origin || "0% 50%" };
+      case "zoom":  return { k: [{ opacity: 0, transform: "scale(" + (o.scale || 1.06) + ")" }, {}], d: d, e: EASE.move, o: o.origin || "50% 50%" };
+      case "growx": return { k: [{ transform: "scaleX(0)" }, {}], d: d, e: EASE.move, o: o.origin || "0% 50%" };
+      case "growy": return { k: [{ transform: "scaleY(0)" }, {}], d: d, e: EASE.move, o: o.origin || "50% 100%" };
+      case "wipe":  return { k: [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], d: d, e: EASE.move };
+      case "count": return { k: [{ opacity: 0 }, {}], d: d, e: EASE.fade };
+    }
+    return { k: [{ opacity: 0 }, {}], d: d, e: EASE.enter };
+  }
+
+  function picture(p, box) {
+    var im = new Image();
+    im.decoding = "async"; im.alt = ""; im.src = p.src;
+    im.style.left = (p.x - box[0]) + "px"; im.style.top = (p.y - box[1]) + "px";
+    im.style.width = p.w + "px"; im.style.height = p.h + "px";
+    return im;
+  }
+  function build(data) {
+    var root = document.createElement("div"), imgs = [], plan = [], nodes = {}, boxes = {};
+    root.style.cssText = "position:absolute;inset:0";
+    var bg = picture({ src: data.bg, x: 0, y: 0, w: 1920, h: 1080 }, [0, 0]);
+    root.appendChild(bg); imgs.push(bg);
+    data.layers.forEach(function (L) {
+      var par = L.parent >= 0 && nodes[L.parent] ? L.parent : -1;
+      var pb = par >= 0 ? boxes[par] : [0, 0];
+      var el = document.createElement("div");
+      el.className = "ly";
+      el.style.left = (L.box[0] - pb[0]) + "px"; el.style.top = (L.box[1] - pb[1]) + "px";
+      el.style.width = L.box[2] + "px"; el.style.height = L.box[3] + "px";
+      nodes[L.i] = el; boxes[L.i] = L.box;
+      if (L.img) {
+        var im = picture(L.img, L.box); el.appendChild(im); imgs.push(im);
+        if (L.count && !reduce) {                     // счётчик: стартовое число до первой ступени
+          im.classList.add("off");
+          plan.push({ el: im, k: [{ visibility: "visible" }, { visibility: "visible" }], d: L.count.base_to, t: 0, fill: "backwards" });
+          L.count.steps.forEach(function (s, n) {
+            var sp = picture(s.img, L.box), last = s.to == null;
+            el.appendChild(sp); imgs.push(sp);
+            if (last) plan.push({ el: sp, k: [{ visibility: "hidden" }, { visibility: "hidden" }], d: s.from, t: 0, fill: "backwards" });
+            else { sp.classList.add("off"); plan.push({ el: sp, k: [{ visibility: "visible" }, { visibility: "visible" }], d: s.to - s.from, t: s.from, fill: "none" }); }
+          });
+        } else if (L.count) {
+          im.classList.add("off");
+          var fin = L.count.steps[L.count.steps.length - 1];
+          if (fin) { var fi = picture(fin.img, L.box); el.appendChild(fi); imgs.push(fi); }
+        }
+      }
+      (par >= 0 ? nodes[par] : root).appendChild(el);
+      L.beats.forEach(function (b) {
+        var f = frames(b.fx, b.o || {}, b.d);
+        if (f.o) el.style.transformOrigin = f.o;
+        plan.push({ el: el, k: f.k, d: f.d, t: b.t, e: f.e, fill: "backwards" });
+      });
+    });
+    return { el: root, imgs: imgs, plan: plan, total: data.total };
+  }
+  function arm(v) {
+    v.anims = v.plan.map(function (p) {
+      var a = p.el.animate(p.k, { duration: Math.max(1, p.d), delay: p.t, easing: p.e || "linear", fill: p.fill });
+      a.pause(); return a;
+    });
+    v.total = reduce ? Math.min(v.total, 400) : v.total;
+  }
+  function seek(t) { if (cur) cur.anims.forEach(function (a) { a.pause(); a.currentTime = t; }); }
+  function state(r) { running = r; st.textContent = r ? "· движение" : ""; }
+  function finish() {
+    clearTimeout(timer);
+    if (cur) cur.anims.forEach(function (a) { try { a.finish(); } catch (e) {} });
+    state(false);
+  }
+  function play() {
+    if (!cur) return;
+    clearTimeout(timer);
+    seek(0);
+    var t0 = document.timeline.currentTime;
+    cur.anims.forEach(function (a) { a.startTime = t0; });
+    state(true);
+    timer = setTimeout(finish, cur.total + 60);
+  }
+  function label() {
+    document.getElementById("no").textContent = SLIDES[i][0];
+    document.getElementById("nm").textContent = SLIDES[i][1];
+  }
+  function show() {
+    var my = ++token, nn = SLIDES[i][0];
+    label();
+    load(nn).then(function (data) {
+      if (my !== token) return;
+      var v = build(data);
+      return Promise.all(v.imgs.map(function (im) { return im.decode ? im.decode().catch(function () {}) : null; })).then(function () {
+        if (my !== token) return;
+        finish();
+        frame.replaceChildren(v.el);
+        msg.textContent = "";
+        cur = v; shown = i; arm(v);
+        requestAnimationFrame(function () { if (my === token) play(); });
+        try { history.replaceState(null, "", "#" + (i + 1)); } catch (e) {}
+        if (i + 1 < SLIDES.length) load(SLIDES[i + 1][0]).catch(function () {});
+      });
+    }).catch(function () {
+      delete cache[nn];
+      if (my === token) msg.textContent = "Кадр не загрузился. Проверьте сеть и нажмите «→» ещё раз.";
+    });
+  }
+  function go(d) { var j = Math.max(0, Math.min(SLIDES.length - 1, i + d)); if (j !== i) { i = j; show(); } }
+  function next() { if (running) finish(); else go(1); }
+  function back() { go(-1); }
+  function full() {
+    try {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen().catch(function () {});
+    } catch (e) {}
+  }
+
+  document.getElementById("prev").onclick = back;
+  document.getElementById("next").onclick = next;
+  document.getElementById("again").onclick = play;
+  var fs = document.getElementById("fs");
+  if (document.fullscreenEnabled) { fs.hidden = false; fs.onclick = full; }
+  addEventListener("keydown", function (e) {
+    var k = e.key;
+    if ((k === " " || k === "Enter") && e.target && e.target.tagName === "BUTTON") return;   // кнопка в фокусе нажмётся сама
+    if (k === "ArrowRight" || k === " " || k === "PageDown" || k === "Enter") { next(); e.preventDefault(); }
+    else if (k === "ArrowLeft" || k === "PageUp" || k === "Backspace") { back(); e.preventDefault(); }
+    else if (k === "Home") { i = 0; show(); } else if (k === "End") { i = SLIDES.length - 1; show(); }
+    else if (k === "r" || k === "R" || k === "к" || k === "К") play();
+    else if (k === "f" || k === "F" || k === "а" || k === "А") full();
+  });
+  var down = null;
+  stage.addEventListener("pointerdown", function (e) { down = { x: e.clientX, y: e.clientY }; });
+  stage.addEventListener("pointerup", function (e) {
+    if (!down) return;
+    var dx = e.clientX - down.x, dy = e.clientY - down.y; down = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { if (dx < 0) next(); else back(); return; }
+    var r = stage.getBoundingClientRect();
+    if (e.clientX - r.left < r.width / 3) back(); else next();
+  });
+  window.PITCH = { seek: function (t) { clearTimeout(timer); state(false); seek(t); }, finish: finish, go: function (n) { i = n - 1; show(); }, state: function () { return { i: i + 1, running: running, ready: shown === i, total: cur ? cur.total : 0 }; } };
+  addEventListener("resize", fit);
+  fit();
+  // картинки кадров — AVIF; браузер без него (iOS до 16) показал бы пустые кадры, лучше сказать прямо
+  var probe = new Image();
+  probe.onload = show;
+  probe.onerror = function () { msg.textContent = "Этот браузер не показывает картинки AVIF. Откройте ссылку в свежем Safari (iOS 16 и новее), Chrome, Edge или Firefox."; };
+  probe.src = "data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADrbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAAAAAAAOcGl0bQAAAAAAAQAAAB5pbG9jAAAAAEQAAAEAAQAAAAEAAAETAAAAJAAAAChpaW5mAAAAAAABAAAAGmluZmUCAAAAAAEAAGF2MDFDb2xvcgAAAABqaXBycAAAAEtpcGNvAAAAFGlzcGUAAAAAAAAAAQAAAAEAAAAQcGl4aQAAAAADCAgIAAAADGF2MUOBAAwAAAAAE2NvbHJuY2x4AAEADQAGgAAAABdpcG1hAAAAAAAAAAEAAQQBAoMEAAAALG1kYXQSAAoIGAAGiAhoNCAyFhlHh4Yhh5555oAAAJBAyRxgigT02+A=";
+})();
+</script>
+</body>
+</html>
